@@ -1,0 +1,23 @@
+[project]
+name = "sport-proto"
+version = "0.1.0"
+description = "Generate sport-service nanopb sources safely."
+requires-python = ">=3.8"
+license = { text = "Proprietary" }
+authors = [
+  { name = "Zepp Health Active BU AI Lab" }
+]
+dependencies = []
+
+[project.scripts]
+sport-proto = "sport_proto:main"
+
+[build-system]
+requires = ["hatchling>=1.26"]
+build-backend = "hatchling.build"
+
+[tool.pytest.ini_options]
+minversion = "8.0"
+addopts = "-q"
+testpaths = ["tests"]
+pythonpath = ["src"]

@@ -1,14 +1,35 @@
 # sport-add-new-type
 
-## 项目简介
+Owner: cs-dongqi@zepp.com  
+Organization: Active.Bu
 
-从仓库名称看，这个仓库原本应与“新增运动类型”相关；但以当前 `main` 分支内容为准，仓库中只有一个 GitHub Actions 飞书通知工作流，没有任何业务代码、脚本、配置、说明文档或测试文件。
+本仓库用于承载新增运动类型的自动化工具。当前已交付第一阶段 CLI：`sport-proto`，用于为 `packages/services/sport` 下的 nanopb schema 串行生成、预览与受控回写 `.pb.c/.pb.h`。
 
-因此，当前仓库更准确的状态是：**面向未来实现的占位仓库**。
+## 使用流程
 
-## 当前已存在的功能
+1. 在代码 repo 的任意子目录执行 `sport-proto -l`，查看实际存在的 Profile。
+2. 将列表中的 Profile 传给 `-p`，先预览生成差异和 `/tmp` 产物。
+3. 确认差异后，追加 `-w` 从临时产物覆盖目标 `.pb.c/.pb.h`。
 
-- 在推送到 `main` 或 `master` 时发送飞书通知。
+```bash
+# 1. 查询可用 Profile
+sport-proto -l
+
+# 2. 预览单个 Profile
+sport-proto -p PHN
+
+# 3. 确认后回写
+sport-proto -p PHN -w
+
+# 多个 Profile 会按输入顺序逐个串行处理
+sport-proto -p PHN -p phn_plan
+```
+
+运行位置可以是代码 repo 的任意子目录；工具会向上查找包含 `.repo/` 的根目录。
+
+## 仓库通知
+
+- 推送到 `main` 或 `master` 时发送飞书通知。
 - 支持手动触发 `Feishu Notify` 工作流。
 - 复用统一的 `reusable-feishu-notify.yml` 发送仓库变更信息。
 
@@ -16,19 +37,8 @@
 
 ```text
 sport-add-new-type/
-└── .github/
-    └── workflows/
-        └── feishu-notify.yml
+├── cli/                    # sport-proto CLI 与单元测试
+├── docs/                   # 第一阶段设计方案
+├── install.sh              # 本地安装脚本
+└── .github/workflows/      # 飞书通知工作流
 ```
-
-## 使用方法
-
-当前没有与“新增运动类型”相关的可执行命令或页面入口。现阶段只能通过：
-
-- 推送代码，触发飞书通知；
-- 在 GitHub Actions 页面手动运行通知工作流。
-
-## 注意事项
-
-- 不能根据仓库名推断这里已经交付了新增运动类型的实现。
-- 若后续补充真实逻辑，应同步补齐 README、依赖、使用方法与验证步骤。
