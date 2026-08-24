@@ -38,7 +38,6 @@ sport-proto -p PHN -p phn_plan
 ```text
 sport-add-new-type/
 ├── cli/                    # sport-proto CLI 与单元测试
-├── docs/                   # 第一阶段设计方案
 ├── install.sh              # 本地安装脚本
 └── .github/workflows/      # 飞书通知工作流
 ```
