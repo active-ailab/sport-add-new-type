@@ -26,7 +26,7 @@ sport-config -check -r /path/to/firmware-repo
 
 规则唯一来源为 `rules/sports_xlsx_rules.yaml`。`check` 不检查 `sports.csv`、`sports_md` 或产品 Feature 表；`gen` 保留 `sport_gen.py` 对 `sports_md` 的既有更新行为。
 
-## 使用流程
+## sport-proto
 
 1. 在代码 repo 的任意子目录执行 `sport-proto -l`，查看实际存在的 Profile。
 2. 将列表中的 Profile 传给 `-p`，先预览生成差异和 `/tmp` 产物。
