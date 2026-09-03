@@ -1,0 +1,400 @@
+# Owner: cs-dongqi@zepp.com
+# Organization: Active.Bu
+#
+# sports.xlsx firmware validation rules.
+# This file is the source of truth for `sport-config check`.
+# The checker must not infer additional business rules in Python code.
+
+schema_version: 1
+name: sports_xlsx_firmware_rules
+description: >-
+  固件运动配置 sports.xlsx 的结构、字段、枚举和跨 Sheet 关联约束。
+  产品侧 Feature 内容、sports.csv 和 sports_md 不属于本规则文件的校验范围。
+
+scope:
+  input_file: sports.xlsx
+  required_sheets:
+    - Sports
+    - sport_group
+    - distance fusion
+    - sport sensor
+    - code_attr_product
+    - code_attr_sport
+  optional_sheet_prefixes:
+    - code_attr_
+  excluded_inputs:
+    - product_feature_table
+    - sports.csv
+    - sports_md
+
+policy:
+  unknown_sheet: warning
+  unknown_column: warning
+  blank_value: null
+  boolean_values: ["Yes", "No"]
+  enabled_values: ["Yes"]
+  disabled_values: ["No"]
+  ignored_values: [null, "", " ", 0, "0", "NULL", "None", "none"]
+  severity:
+    error: check_failed
+    warning: check_passed_with_warning
+  headers:
+    physical_row: 1
+    semantic_row: 2
+    lookup_order: [semantic_row, physical_row]
+
+  # A required column is not the same as a required value in every data row.
+  # Empty/0/space values in feature flag columns mean disabled.
+  required_column_key: required_column
+  required_value_key: required_value
+
+value_types:
+  flag:
+    enabled: ["Yes"]
+    disabled: ["No", 0, "0", null, "", " ", "NULL", "None", "none"]
+  sport_name_columns:
+    source_header: true
+    enabled: ["Yes"]
+    disabled: [0, "0", null, "", " ", "NULL"]
+  product_flag_columns:
+    source: columns_between_row_markers
+    enabled: ["Yes"]
+    disabled: ["No", 0, "0", null, "", " ", "NULL"]
+
+sheet_layout:
+  - id: workbook.required_sheets
+    severity: error
+    rule: required_sheets
+    sheets:
+      - Sports
+      - sport_group
+      - distance fusion
+      - sport sensor
+      - code_attr_product
+      - code_attr_sport
+
+  - id: workbook.code_attr_product_boundary
+    severity: error
+    rule: row_markers
+    sheet: code_attr_product
+    start_marker: code_attr_product_start
+    end_marker: code_attr_product_end
+    marker_column: 1
+    start_before_end: true
+
+fields:
+  Sports:
+    key: en name of type
+    data_start_row: 3
+    required_columns:
+      - fw sport id
+      - cn name of type
+      - en name of type
+      - GPS
+      - APP端轨迹播放
+      - 心率
+      - type of hr algo
+      - 是否需要额外算法
+      - 健康模块站立标记
+      - standup sensitivity
+      - App Category Name
+      - App侧分类
+      - Category Name
+      - 分类
+    columns:
+      fw sport id:
+        type: integer
+        required_value: true
+        unique: true
+        constraints:
+          min: 1
+      cn name of type:
+        type: string
+        required_value: true
+        unique: true
+        trim: true
+      en name of type:
+        type: string
+        required_value: true
+        unique: true
+        trim: true
+        constraints:
+          non_empty: true
+      GPS:
+        type: flag
+        required_column: true
+      APP端轨迹播放:
+        type: flag
+        required_column: true
+      心率:
+        type: flag
+        required_column: true
+      type of hr algo:
+        type: string
+        required_when:
+          column: 心率
+          equals: "Yes"
+        constraints:
+          non_empty: true
+      是否需要额外算法:
+        type: enum
+        required_column: true
+        values: [是, 否, null, ""]
+        blank_means: 否
+      健康模块站立标记:
+        type: enum
+        required_value: true
+        values:
+          - 产生步数或距离
+          - 不产生步数或距离，且活动较大
+          - 不产生步数或距离，且活动较小
+      standup sensitivity:
+        type: number
+        required_when:
+          column: 健康模块站立标记
+          equals: 产生步数或距离
+      App Category Name:
+        type: string
+        required_value: true
+      App侧分类:
+        type: string
+        required_value: true
+      Category Name:
+        type: string
+        required_value: true
+      分类:
+        type: string
+        required_value: true
+
+  sport_group:
+    key: en_group_name
+    data_start_row: 2
+    row_range:
+      end_marker: sport_group_end
+      column: 1
+    required_columns: [en_group_name, cn_group_name]
+    columns:
+      en_group_name:
+        type: string
+        required_value: true
+        unique: true
+        trim: true
+      cn_group_name:
+        type: string
+        required_value: true
+        unique: true
+        trim: true
+
+  distance fusion:
+    key: row_label
+    key_column: 1
+    header_row: 1
+    data_start_row: 2
+    required_row_labels: true
+    row_labels:
+      - 距离
+      - GPS
+      - 步频
+      - 算法
+    columns:
+      sport_columns:
+        type: sport_name_columns
+        source_sheet: sport_group
+        source_column: cn_group_name
+        required_column: true
+        allowed_values: ["Yes", 0, "0", null, "", " ", "NULL"]
+      算法:
+        type: string
+        required_value: true
+        allowed_values:
+          - ACC
+          - GPS
+          - ACC+GPS
+          - GPS+SWIM
+          - SWIM
+          - BOAT
+          - NULL
+
+  sport sensor:
+    key: 英文名称
+    header_row: 2
+    data_start_row: 3
+    required_columns: [数据类别, 数据项, 英文名称]
+    columns:
+      数据类别:
+        type: string
+        required_column: true
+      数据项:
+        type: string
+        required_when:
+          column: 数据类别
+          not_empty: true
+      英文名称:
+        type: string
+        required_value: true
+        unique: true
+        trim: true
+      sport_columns:
+        type: sport_name_columns
+        source_sheet: sport_group
+        source_column: en_group_name
+        required_column: true
+        allowed_values: ["Yes", null, "", " "]
+
+  code_attr_product:
+    key: product_sheet_name
+    header_row: 1
+    data_start_row: 2
+    row_range:
+      start_marker: code_attr_product_start
+      end_marker: code_attr_product_end
+      column: 1
+    row_type: sheet_name
+    row_pattern: '^code_attr_[A-Za-z0-9_]+'
+    require_registered_sheet_exists: true
+    required_value: true
+
+  code_attr_sport:
+    key: en_attr_name
+    header_row: 2
+    data_start_row: 3
+    ignore_rows:
+      - column: en_attr_name
+        values: [SPORT_ATTR_MAX]
+    required_columns:
+      - attr id
+      - attr describe
+      - en_attr_name
+      - peripheral_attr
+      - product_start
+      - product_end
+    columns:
+      attr id:
+        type: integer
+        required_column: true
+        unique: true
+        constraints:
+          min: 0
+      attr describe:
+        type: string
+        required_value: true
+      en_attr_name:
+        type: string
+        required_value: true
+        unique: true
+        trim: true
+      peripheral_attr:
+        type: enum
+        required_value: true
+        values: ["YES", "NO", "PREFER", "MUST"]
+      product_start:
+        type: product_flag_columns
+        required_column: true
+      product_end:
+        type: product_flag_columns
+        required_column: true
+
+relations:
+  - id: sport_group.sport_to_group
+    severity: error
+    rule: foreign_key
+    from:
+      sheet: Sports
+      column: en name of group
+    to:
+      sheet: sport_group
+      column: en_group_name
+    normalize: lower_trim
+    aliases:
+      Cross-country skiing: cross country skiing
+
+  - id: distance_fusion.sport_columns
+    severity: error
+    rule: columns_match
+    sheet: distance fusion
+    columns_from:
+      sheet: sport_group
+      column: cn_group_name
+    target_header_row: 1
+    ignored_source_values: [Hybrid 模拟]
+    aliases:
+      类型 1: 类型1
+      类型 2: 类型2
+      类型 3: 类型3
+      类型 4: 类型4
+      类型 5: 类型5
+      类型 6: 类型6
+      登山滑雪: 滑雪登山
+    normalize: trim
+
+  - id: sport_sensor.sport_columns
+    severity: error
+    rule: columns_match
+    sheet: sport sensor
+    columns_from:
+      sheet: sport_group
+      column: cn_group_name
+    target_header_row: 1
+    excluded_target_columns: [数据类别, 数据项, 英文名称]
+    ignored_source_values: [Hybrid 模拟]
+    aliases:
+      类型 1: 类型1
+      类型 2: 类型2
+      类型 3: 类型3
+      类型 4: 类型4
+      类型 5: 类型5
+      类型 6: 类型6
+      登山滑雪: 滑雪登山
+      钓鱼: 钓鱼(钓鱼数量)
+    normalize: trim
+
+  - id: code_attr_sport.sport_columns
+    severity: error
+    rule: columns_match
+    sheet: code_attr_sport
+    columns_from:
+      sheet: sport_group
+      column: cn_group_name
+    target_header_row: 1
+    excluded_target_columns: [实时数据项, 对应的产品]
+    ignored_source_values: [Hybrid 模拟]
+    aliases:
+      类型 1: 类型1
+      类型 2: 类型2
+      类型 3: 类型3
+      类型 4: 类型4
+      类型 5: 类型5
+      类型 6: 类型6
+      跑圈: 跑圈/操场跑步
+    normalize: trim
+
+  - id: sports.hr_algo_dependency
+    severity: error
+    rule: conditional_value
+    sheet: Sports
+    when:
+      column: 心率
+      starts_with: "Yes"
+    then:
+      column: type of hr algo
+      non_empty: true
+
+  - id: sports.standup_dependency
+    severity: error
+    rule: conditional_value
+    sheet: Sports
+    when:
+      column: 健康模块站立标记
+      equals: 产生步数或距离
+    then:
+      column: standup sensitivity
+      non_empty: true
+
+generator_contract:
+  script: sport_gen.py
+  working_directory: same_as_script
+  write_mode: direct
+  precondition: check_passed_without_errors
+  excluded_from_check:
+    - sports.csv
+    - sports_md
