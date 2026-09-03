@@ -58,7 +58,14 @@ sport-proto -p PHN -p phn_plan
 
 ```text
 sport-add-new-type/
-├── cli/                    # sport-proto CLI 与单元测试
+├── cli/
+│   ├── bin/                # sport-config、sport-proto 命令入口
+│   ├── src/                # 两个 CLI 的实现
+│   ├── tests/              # CLI 单元测试
+│   └── pyproject.toml      # CLI 安装与依赖配置
+├── rules/
+│   └── sports_xlsx_rules.yaml  # sports.xlsx 固件校验规则
+├── VERSION                 # 仓库版本
 ├── install.sh              # 本地安装脚本
 └── .github/workflows/      # 飞书通知工作流
 ```
