@@ -4,8 +4,9 @@
 
 设计约定：
 - 一个变更操作（如新增运动）产出单个 ChangePlan。
-- 计划内含三类原子项：
+- 计划内含四类原子项：
     * CellSet   —— 覆盖/清空单元格。坐标为"最终坐标"（含同一计划内行/列插入的偏移）。
+    * CellRangeClear —— 清空一个单元格矩形区域。
     * RowInsert / RowDelete —— 行级插入/删除。at 为插入/删除起点行号（1 基）。
     * ColInsert / ColDelete —— 列级插入/删除。at 为插入/删除起点列号（1 基）。
 - apply(wb) 顺序：先处理所有行/列 增删（跨表顺序任意、同表按 at 倒序避免坐标漂移），
@@ -35,6 +36,20 @@ class CellSet:
         new_s = "" if self.new is None else str(self.new)
         mark = "=" if old_s == new_s else "→"
         return f"  {self.sheet}!{get_column_letter(self.col)}{self.row}  {old_s!r} {mark} {new_s!r}  ({self.reason})"
+
+
+@dataclass
+class CellRangeClear:
+    sheet: str
+    row_start: int
+    row_end: int
+    col_start: int
+    col_end: int
+    reason: str = ""
+
+    def describe(self):
+        return (f"  {self.sheet}!{get_column_letter(self.col_start)}{self.row_start}:"
+                f"{get_column_letter(self.col_end)}{self.row_end} 清空  ({self.reason})")
 
 
 @dataclass
@@ -82,6 +97,16 @@ class ColDelete:
 
 
 @dataclass
+class SheetCopy:
+    source: str
+    target: str
+    reason: str = ""
+
+    def describe(self):
+        return f"  工作表: 从 {self.source} 复制为 {self.target}  ({self.reason})"
+
+
+@dataclass
 class ChangePlan:
     title: str
     items: list = field(default_factory=list)
@@ -105,6 +130,13 @@ class ChangePlan:
 
     def apply(self, wb: openpyxl.Workbook):
         """按『先行列增删、后单元格覆盖』执行。行列增删按 同表 at 倒序，避免坐标漂移。"""
+        for it in self.items:
+            if isinstance(it, SheetCopy):
+                if it.source not in wb.sheetnames:
+                    raise ValueError(f"复制源工作表不存在: {it.source}")
+                if it.target in wb.sheetnames:
+                    raise ValueError(f"目标工作表已存在: {it.target}")
+                wb.copy_worksheet(wb[it.source]).title = it.target
         # 行/列增删：先倒序处理同表内的同向操作
         by_sheet = {}
         for it in self.items:
@@ -126,4 +158,10 @@ class ChangePlan:
         for it in self.items:
             if isinstance(it, CellSet):
                 wb[it.sheet].cell(row=it.row, column=it.col).value = it.new
+            elif isinstance(it, CellRangeClear):
+                ws = wb[it.sheet]
+                for row in ws.iter_rows(min_row=it.row_start, max_row=it.row_end,
+                                        min_col=it.col_start, max_col=it.col_end):
+                    for cell in row:
+                        cell.value = None
         return self

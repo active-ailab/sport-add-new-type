@@ -4,7 +4,7 @@
 
 校验等级（参考《运动配置 sports.xlsx 规则与约束（固件侧）》第 9 节）：
   error    阻断级：会导致生成失败 / 非法 C 标识 / 数组错位 / 跨表引用缺失
-  warning  高优先级：可能造成实际能力错误（大小写、单侧矩阵、空格误判）
+  warning  高优先级：可能造成实际能力错误（空格误判等）
   info     提示人工确认（保留位、特殊文本、accel ignore 等）
 每条输出 rule_id / sheet / cell / 当前值 / 说明 / 影响产物。
 """
@@ -41,11 +41,19 @@ class Checker:
     def __init__(self, model: WorkbookModel, rules):
         self.m = model
         self.rules = rules.get("contract_rules", {})
+        alignment = self.rules.get("ALN-001", {})
+        self.allow_unreferenced_trailing_groups = bool(
+            alignment.get("allow_unreferenced_trailing_groups", False)
+        )
+        self.alignment_aliases = {
+            ops.enum_norm(actual): ops.enum_norm(expected)
+            for actual, expected in alignment.get("accepted_name_aliases", {}).items()
+        }
         self.findings: list[Finding] = []
 
     def add(self, rule_id, severity, sheet, cell, value, message):
         spec = self.rules.get(rule_id)
-        if spec is None:
+        if spec is None or not spec.get("enabled", True):
             return
         configured_severity = spec["severity"]
         self.findings.append(Finding(
@@ -175,14 +183,18 @@ class Checker:
     def _check_matrix_alignment(self):
         m = self.m
         try:
-            group_keys = [ops.enum_norm(g.en) for g in m.group_rows()]
+            groups = m.group_rows()
+            group_keys = [ops.enum_norm(g.en) for g in groups]
+            referenced_groups = {
+                ops.enum_norm(s.group_en) for s in m.sports_rows() if s.group_en is not None
+            }
         except Exception:
             return
         # sport sensor
         sl = m.sensor_layout()
         if sl["group_cols"]:
             actual = [ops.enum_norm(x) for x in sl["group_names"]]
-            self._align("sport sensor", actual, group_keys)
+            self._align("sport sensor", actual, groups, group_keys, referenced_groups)
         # code_attr_*（group 列区）
         for t in m.code_attr_sheet_list():
             if t not in m.wb.sheetnames:
@@ -191,17 +203,41 @@ class Checker:
                 continue
             lay = m.code_attr_layout(t)
             actual = [ops.enum_norm(x) for x in lay["group_names"]]
-            self._align(t, actual, group_keys)
+            self._align(t, actual, groups, group_keys, referenced_groups)
 
-    def _align(self, sheet, actual, expect):
-        if actual == expect:
+    def _aligned(self, actual, expect):
+        return all(self.alignment_aliases.get(value, value) == expected_value
+                   for value, expected_value in zip(actual, expect))
+
+    def _align(self, sheet, actual, groups, expect, referenced_groups):
+        if len(actual) == len(expect) and self._aligned(actual, expect):
+            return
+        # 仅允许缺失 sport_group 尾部、且无运动引用的 group。生成器按 Sports
+        # 实际引用生成映射；这种孤立尾项不会参与任何已有矩阵，故只提示不阻断。
+        if self.allow_unreferenced_trailing_groups and len(actual) < len(expect):
+            missing = groups[len(actual):]
+            used = [group.en for group in missing if ops.enum_norm(group.en) in referenced_groups]
+            if not used:
+                missing_names = "、".join(group.en for group in missing)
+                self.add("ALN-001", "info", sheet, "-",
+                         f"{len(actual)}列 vs sport_group {len(expect)}行；尾部缺失 {missing_names}",
+                         "仅缺少未被 Sports 引用的尾部 group；生成器不会使用该列，不阻断生成。")
+                return
+            self.add("ALN-001", "error", sheet, "-",
+                     f"{len(actual)}列 vs sport_group {len(expect)}行；缺失且被引用 {','.join(used)}",
+                     "矩阵缺少被 Sports 引用的尾部 group 列，生成器将无法生成该 group 的配置。")
             return
         if len(actual) != len(expect):
+            message = ("矩阵列数多于 sport_group，生成器按列序映射可能错位。"
+                       if len(actual) > len(expect) else
+                       "矩阵列数量与 sport_group 行数不一致，且缺失的尾部 group 被 Sports 引用，"
+                       "生成器按列序映射可能错位。")
             self.add("ALN-001", "error", sheet, "-",
                      f"{len(actual)}列 vs sport_group {len(expect)}行",
-                     "矩阵列数量与 sport_group 行数不一致，生成器按列序映射 group 将错位。")
+                     message)
             return
-        diff = [f"{a}?={e}" for a, e in zip(actual, expect) if a != e]
+        diff = [f"{a}?={e}" for a, e in zip(actual, expect)
+                if self.alignment_aliases.get(a, a) != e]
         if diff:
             self.add("ALN-001", "info", sheet, "-", "；".join(diff[:5]),
                      "列数量一致但个别列名与 sport_group 不对应（生成器按列序工作，仅提示名称规范化）。")
@@ -264,13 +300,6 @@ class Checker:
                     seen_id[a.attr_id] = tag
                 if not a.describe:
                     self.add("ATTR-003", "warning", t, f"B{a.row}", a.describe, "attr describe 为空")
-                # 单侧矩阵：产品全空但 group 有值 / 反之
-                prod_any = any(str(x).strip() == "Yes" for x in a.product.values())
-                group_any = any(str(x).strip() == "Yes" for x in a.group.values())
-                if (prod_any or group_any) and not (prod_any and group_any):
-                    self.add("MAT-001", "warning", t, f"A{a.row}", a.attr_id,
-                             "产品侧与运动/group 侧只配置了一侧：生成映射取交集，将全部为 false，请人工确认是否业务预期")
-
     # ---------- Sports 心率/站立 ----------
     def _check_hr_standup(self):
         m = self.m

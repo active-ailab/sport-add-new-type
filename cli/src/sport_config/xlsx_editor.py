@@ -24,7 +24,8 @@ from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.formula import ArrayFormula
 
 from .xlsx_model import (SHEET_ATTR_CATALOG, SHEET_DISTANCE, SHEET_GROUP, SHEET_SENSOR, SHEET_SPORTS, WorkbookModel)
-from .xlsx_plan import CellSet, ChangePlan, ColInsert, ColDelete, RowInsert, RowDelete
+from .xlsx_plan import (CellRangeClear, CellSet, ChangePlan, ColInsert, ColDelete,
+                        RowInsert, RowDelete, SheetCopy)
 
 YES = "Yes"          # 产品支持 / 实时数据开关
 SENSOR_YES = "yes"   # sport sensor 专用（生成器只认小写）
@@ -618,8 +619,8 @@ def group_delete(model: WorkbookModel, *, en: Optional[str] = None, cn: Optional
     """删除 group（联动：sport_group 行 + 全部矩阵表对应列）。
     安全规则：
       1) 仍有运动引用该 group（Sports 行 en name of group）→ 阻断，提示先迁移运动；
-      2) 矩阵表列数与分组数不一致 → 阻断，要求先手工整理；
-      3) 通过后按 group 在 sport_group 中的序号删除各矩阵表的同序位列。
+      2) 各矩阵表按 group 列序删除；该序号不存在则说明该表本来就缺列，跳过即可；
+      3) 删除后以 sport_group 新序号作为后续矩阵对齐基准。
     """
     if not (en or cn):
         raise OpError("需要 en 或 cn 定位 group")
@@ -643,32 +644,27 @@ def group_delete(model: WorkbookModel, *, en: Optional[str] = None, cn: Optional
     idx = next((i for i, g in enumerate(rows) if g.row == grp.row), None)
     if idx is None:
         raise OpError(f"group {grp.en!r} 定位序号失败")
-    n_group = len(rows)
     p = ChangePlan(title=f"删除 group: {grp.en} / {grp.cn}")
-    p.add(RowDelete(sheet=SHEET_GROUP, at=grp.row, count=1, reason="删除 group 行"))
 
-    # 3) 各矩阵表删除同序位列（先数量对位校验）
-    def _col_guard(name, gcols, names_desc):
-        if len(gcols) != n_group:
-            raise OpError(f"{name} 列数({len(gcols)})与分组数({n_group})不一致，"
-                          "无法安全定位待删列，请先手工整理")
-
+    # 3) 矩阵表按 group 序号取列。列数可能已因尾部孤立 group 缺失而不同：
+    # 有该序号列时删除；没有则不操作，删除 sport_group 行后自然恢复对齐。
     sl = model.sensor_layout()
-    _col_guard("sport sensor", sl["group_cols"], "group_cols")
-    p.add(ColDelete(sheet=SHEET_SENSOR, at=sl["group_cols"][idx], count=1,
-                    reason="删除该 group 对应的传感器列"))
     dl = model.distance_layout()
-    _col_guard("distance fusion", dl["group_cols"], "group_cols")
-    p.add(ColDelete(sheet=SHEET_DISTANCE, at=dl["group_cols"][idx], count=1,
-                    reason="删除该 group 对应的距离配置列"))
     tbls = code_attr_tables if code_attr_tables is not None else model.code_attr_sheet_list()
+    matrices = [(SHEET_SENSOR, sl["group_cols"],
+                 "删除该 group 对应的传感器列"),
+                (SHEET_DISTANCE, dl["group_cols"],
+                 "删除该 group 对应的距离配置列")]
     for t in tbls:
         if t not in model.wb.sheetnames:
             raise OpError(f"勾选的表 {t} 不存在")
         lay = model.code_attr_layout(t)
-        _col_guard(t, lay["group_cols"], "group_cols")
-        p.add(ColDelete(sheet=t, at=lay["group_cols"][idx], count=1,
-                        reason="删除该 group 对应的属性矩阵列"))
+        matrices.append((t, lay["group_cols"],
+                         "删除该 group 对应的属性矩阵列"))
+    p.add(RowDelete(sheet=SHEET_GROUP, at=grp.row, count=1, reason="删除 group 行"))
+    for name, columns, reason in matrices:
+        if idx < len(columns):
+            p.add(ColDelete(sheet=name, at=columns[idx], count=1, reason=reason))
     return p
 
 
@@ -781,18 +777,42 @@ def _noop_note(sheet: str):
 
 
 # ---------------------------------------------------------------- 产品列
+def _catalog_end_row(model: WorkbookModel) -> int:
+    ws = model.ws(SHEET_ATTR_CATALOG)
+    for row in range(1, ws.max_row + 1):
+        if ws.cell(row=row, column=1).value == "code_attr_product_end":
+            return row
+    raise OpError("code_attr_product 未找到 code_attr_product_end")
+
+
 def product_add(model: WorkbookModel, product: str, *,
-                code_attr_tables: Optional[list] = None) -> ChangePlan:
-    """新增产品：Sports 产品列(row1 名 + row2 计数 0) + code_attr 各表产品列区。"""
+                code_attr_tables: Optional[list] = None,
+                new_code_attr_table: Optional[str] = None) -> ChangePlan:
+    """新增产品：Sports 产品列 + 一个指定的 code_attr 表产品列，或新建对应表。"""
     if not product:
         raise OpError("产品名不能为空")
     if not re.match(r"^[A-Za-z][A-Za-z0-9_ -]*$", product):
         raise OpError(f"产品名须为字母开头（将用于生成 sport_type_in_<name>.h / sport_rt_attr_<name>.h）：{product!r}")
     pcols, pnames = model.sports_product_columns()
-    if product in pnames:
+    if product.casefold() in [str(name).casefold() for name in pnames]:
         raise OpError(f"产品 {product!r} 已存在于 Sports")
-    tbls = code_attr_tables if code_attr_tables is not None else model.code_attr_sheet_list()
-    p = ChangePlan(title=f"新增产品列: {product}")
+    if new_code_attr_table:
+        if code_attr_tables:
+            raise OpError("新建 code_attr 表时不能同时选择既有表")
+        if not re.fullmatch(r"code_attr_[A-Za-z0-9_]+", new_code_attr_table):
+            raise OpError(f"新表名必须为 code_attr_ 开头的字母、数字或下划线：{new_code_attr_table!r}")
+        if new_code_attr_table in model.wb.sheetnames:
+            raise OpError(f"新表 {new_code_attr_table!r} 已存在")
+        if new_code_attr_table in model.code_attr_sheet_list():
+            raise OpError(f"新表 {new_code_attr_table!r} 已登记在 code_attr_product")
+        tbls = [new_code_attr_table]
+    else:
+        tbls = code_attr_tables or []
+        if len(tbls) != 1:
+            raise OpError("新增产品时必须选择一个 code_attr_* 表，或选择新建表")
+        if tbls[0] not in model.wb.sheetnames:
+            raise OpError(f"选择的表 {tbls[0]!r} 不存在")
+    p = ChangePlan(title=f"新增产品列: {product} → {tbls[0]}")
 
     # Sports：产品列区末尾追加
     at_col = pcols[-1] + 1
@@ -804,20 +824,60 @@ def product_add(model: WorkbookModel, product: str, *,
     p.add(_set(model, SHEET_SPORTS, 2, at_col, 0, "产品支持运动数(row2)"))
 
     for t in tbls:
-        if t not in model.wb.sheetnames:
-            raise OpError(f"勾选的表 {t} 不存在")
-        lay = model.code_attr_layout(t)
-        pe = model.field_col(t, "product_end")
-        at = pe  # product_end 前插入
-        # 校验该位置确实在 product_end 哨兵列前
+        if new_code_attr_table:
+            template = "code_attr_sport"
+            lay = model.code_attr_layout(template)
+            groups = model.group_rows()
+            if len(lay["group_cols"]) > len(groups):
+                raise OpError(
+                    f"模板 {template} 的 group 列数({len(lay['group_cols'])})"
+                    f"大于 sport_group 数({len(groups)})，无法安全创建新表"
+                )
+            p.add(SheetCopy(source=template, target=t, reason="新 code_attr 表模板"))
+            p.add(RowInsert(sheet=SHEET_ATTR_CATALOG, at=_catalog_end_row(model), count=1,
+                            reason="登记新 code_attr 表"))
+            p.add(_set(model, SHEET_ATTR_CATALOG, _catalog_end_row(model), 1, t,
+                       "code_attr 表名"))
+            p.add(ColDelete(sheet=t, at=lay["product_cols"][0], count=len(lay["product_cols"]),
+                            reason="移除模板产品列"))
+            at = model.field_col(template, "product_end") - len(lay["product_cols"])
+
+            # 新项目不能继承模板项目已启用的 group 能力。产品列移除并新插入后，
+            # 原 group 列会整体左移 len(product_cols)-1 列；CellSet 使用最终坐标。
+            group_col_shift = len(lay["product_cols"]) - 1
+            p.add(CellRangeClear(
+                sheet=t,
+                row_start=lay["attr_start"], row_end=lay["attr_end"] - 1,
+                col_start=lay["group_cols"][0] - group_col_shift,
+                col_end=lay["group_cols"][-1] - group_col_shift,
+                reason="新项目默认关闭 group 能力",
+            ))
+
+            # 模板可能落后于当前 sport_group。只补齐模板末尾缺少的分组，避免新表
+            # 因复制旧结构立即产生 group 列数不一致；已有的分组表头保持模板原样。
+            missing_groups = groups[len(lay["group_cols"]):]
+            if missing_groups:
+                attr_end_col = model.field_col(template, "attr_end")
+                p.add(ColInsert(sheet=t, at=attr_end_col, count=len(missing_groups),
+                                reason="补齐当前 sport_group 列"))
+                first_final_col = attr_end_col - group_col_shift
+                for offset, group in enumerate(missing_groups):
+                    p.add(CellSet(sheet=t, row=1, col=first_final_col + offset,
+                                  new=group.cn, old=None, reason="新增 group 中文表头"))
+                    p.add(CellSet(sheet=t, row=2, col=first_final_col + offset,
+                                  new=group.en, old=None, reason="新增 group 英文表头"))
+        else:
+            lay = model.code_attr_layout(t)
+            at = model.field_col(t, "product_end")
         p.add(ColInsert(sheet=t, at=at, count=1, reason="product_end 前插入产品列"))
-        p.add(_set(model, t, 1, at, product, "产品展示名(row1)"))
-        p.add(_set(model, t, 2, at, product, "产品名(row2)"))
-        # 该产品在各 attr 行默认 None（不具备）
-        for r in range(lay["attr_start"], lay["attr_end"]):
-            if model.ws(t).cell(row=r, column=3).value:
-                p.add(CellSet(sheet=t, row=r, col=at, new=None, old=None,
-                              reason=f"attr 行 {r} 产品支持(默认空)"))
+        if new_code_attr_table:
+            p.add(CellSet(sheet=t, row=1, col=at, new=product, old=None,
+                          reason="产品展示名(row1)"))
+            p.add(CellSet(sheet=t, row=2, col=at, new=product, old=None,
+                          reason="产品名(row2)"))
+        else:
+            p.add(_set(model, t, 1, at, product, "产品展示名(row1)"))
+            p.add(_set(model, t, 2, at, product, "产品名(row2)"))
     return p
 
 
@@ -834,8 +894,10 @@ def product_delete(model: WorkbookModel, product: str, *,
         if t not in model.wb.sheetnames:
             continue
         lay = model.code_attr_layout(t)
-        if product not in lay["product_names"]:
+        matches = [i for i, name in enumerate(lay["product_names"])
+                   if str(name).casefold() == product.casefold()]
+        if not matches:
             continue
-        c = lay["product_cols"][lay["product_names"].index(product)]
+        c = lay["product_cols"][matches[0]]
         p.add(ColDelete(sheet=t, at=c, count=1, reason="删除产品列"))
     return p

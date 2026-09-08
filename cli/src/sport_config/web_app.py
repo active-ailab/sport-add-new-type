@@ -14,6 +14,7 @@ import argparse
 import json
 import os
 import sys
+import threading
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -32,6 +33,11 @@ from .xml_report import report_bytes
 # 代码内不写死任何用户/分支的绝对路径。
 XLSX_PATH = None
 TARGET = None
+_generation_lock = threading.Lock()
+_generation_state_lock = threading.Lock()
+_generation_active = False
+_generation_cancelled = False
+_generation_process = None
 app = Flask(__name__)
 app.config["JSON_AS_ASCII"] = False
 # 前端模板改动即时生效，无需重启服务
@@ -39,6 +45,38 @@ app.config["TEMPLATES_AUTO_RELOAD"] = True
 
 # 不依赖目标文件的接口白名单
 _FILE_FREE_APIS = {"/api/open", "/api/list-dir", "/api/files"}
+
+
+def _begin_generation():
+    global _generation_active, _generation_cancelled, _generation_process
+    if not _generation_lock.acquire(blocking=False):
+        raise TargetError("已有生成任务正在运行")
+    with _generation_state_lock:
+        _generation_active = True
+        _generation_cancelled = False
+        _generation_process = None
+
+
+def _finish_generation():
+    global _generation_active, _generation_process
+    with _generation_state_lock:
+        _generation_active = False
+        _generation_process = None
+    _generation_lock.release()
+
+
+def _set_generation_process(process):
+    global _generation_process
+    with _generation_state_lock:
+        _generation_process = process
+        cancelled = _generation_cancelled
+    if process is not None and cancelled and process.poll() is None:
+        process.terminate()
+
+
+def _generation_was_cancelled():
+    with _generation_state_lock:
+        return _generation_cancelled
 
 
 @app.before_request
@@ -139,7 +177,8 @@ def _op_result(op: dict):
         elif action == "attr_delete":
             plan = ops.attr_delete(m, p.get("en"), code_attr_tables=p.get("tables"))
         elif action == "product_add":
-            plan = ops.product_add(m, p.get("name", ""), code_attr_tables=p.get("tables"))
+            plan = ops.product_add(m, p.get("name", ""), code_attr_tables=p.get("tables"),
+                                   new_code_attr_table=p.get("new_table"))
         elif action == "product_delete":
             plan = ops.product_delete(m, p.get("name", ""), code_attr_tables=p.get("tables"))
         elif action == "refresh_counts":
@@ -261,6 +300,22 @@ def api_groups():
         m.close()
 
 
+@app.get("/api/products")
+def api_products():
+    m = _model()
+    try:
+        locations = {}
+        for table in m.code_attr_sheet_list():
+            for product in m.code_attr_layout(table)["product_names"]:
+                locations.setdefault(str(product).casefold(), []).append(table)
+        return jsonify({"ok": True, "data": [
+            {"name": product, "tables": locations.get(str(product).casefold(), [])}
+            for product in m.sports_product_columns()[1]
+        ]})
+    finally:
+        m.close()
+
+
 @app.get("/api/attrs")
 def api_attrs():
     m = _model()
@@ -317,12 +372,37 @@ def api_check_export():
 
 @app.post("/api/generate")
 def api_generate():
+    begun = False
     try:
+        _begin_generation()
+        begun = True
         if TARGET is None:
             raise TargetError("请先选择目标 sports.xlsx")
-        return jsonify({"ok": True, "data": {"diff": generate(TARGET)}})
+        result = check_file(XLSX_PATH)
+        if result.error_count:
+            raise TargetError("sports.xlsx check failed: {} error(s)".format(result.error_count))
+        return jsonify({"ok": True, "data": {
+            "diff": generate(TARGET, on_process=_set_generation_process,
+                             is_cancelled=_generation_was_cancelled)}})
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)})
+    finally:
+        if begun:
+            _finish_generation()
+
+
+@app.post("/api/generate/cancel")
+def api_generate_cancel():
+    global _generation_cancelled
+    with _generation_state_lock:
+        if not _generation_active:
+            return jsonify({"ok": True, "data": {"active": False,
+                                                    "message": "当前没有正在生成的任务"}})
+        _generation_cancelled = True
+        process = _generation_process
+    if process is not None and process.poll() is None:
+        process.terminate()
+    return jsonify({"ok": True, "data": {"active": True, "message": "已请求中断生成"}})
 
 
 @app.post("/api/plan")
@@ -346,7 +426,8 @@ def api_apply():
         m = _model()
         try:
             plan.apply(m.wb)
-            info = save_workbook(m.wb, XLSX_PATH, backup=True)
+            # info = save_workbook(m.wb, XLSX_PATH, backup=True)
+            info = save_workbook(m.wb, XLSX_PATH, backup=False)
         finally:
             m.close()
         return jsonify({"ok": True, "data": {"describe": plan.describe(),

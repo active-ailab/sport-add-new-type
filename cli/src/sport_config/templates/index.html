@@ -43,6 +43,7 @@
   button.btn{background:var(--accent);color:#fff;border:none;border-radius:6px;
     padding:7px 16px;cursor:pointer;font-size:13px}
   button.btn:hover{filter:brightness(1.1)}
+  button.btn:disabled{opacity:.55;cursor:not-allowed;filter:none}
   button.ghost{background:transparent;border:1px solid var(--border);color:var(--text)}
   button.ghost:hover{border-color:var(--accent);color:var(--accent)}
   button.danger{background:transparent;border:1px solid var(--err);color:var(--err)}
@@ -206,12 +207,12 @@
   <section id="tab-products" style="display:none">
     <div class="toolbar">
       <button class="btn" onclick="openProductModal()">新增产品列</button>
-      <span class="hint">新增产品会同步 Sports 产品列 + 所有 code_attr_* 产品列（product_start/end 之间）</span>
+      <span class="hint">新增产品会写入 Sports 与选定的一张 code_attr_* 表；历史重复关联会一并展示</span>
       <span style="flex:1"></span>
       <span id="productsSizeWrap"></span>
     </div>
     <div style="overflow:auto"><table>
-      <thead><tr><th>产品</th><th>Sports 行1</th><th>code_attr_* 含该列</th><th style="width:100px">操作</th></tr></thead>
+      <thead><tr><th>产品</th><th>Sports 行1</th><th>code_attr_* 表</th><th style="width:100px">操作</th></tr></thead>
       <tbody id="productBody"></tbody>
     </table></div>
     <div class="pager" id="productsPager"></div>
@@ -279,6 +280,8 @@ function toast(msg,type){
   clearTimeout(t._h); t._h=setTimeout(()=>t.className='toast',4200);
 }
 function esc(s){return String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
+function jsArg(value){return esc(JSON.stringify(value));}
+function groupKey(value){return String(value==null?'':value).trim().toLowerCase().replace(/[\s-]+/g,'');}
 
 // ---------- 通用分页控件：页码直点 + 输入跳页 + 每页条数 ----------
 const PG_CB={};
@@ -340,14 +343,15 @@ async function confirmApply(op, title){
     </div>`);
   $('doApply').onclick=async()=>{
     try{
-      const r=await api('/api/apply',op);
-      toast('已保存，备份: '+(r.backup||'-'));
-      closeModal(); refreshAll();
+      await api('/api/apply',op);
+      closeModal(); await refreshAll();
+      toast('已保存');
     }catch(e){ toast(e.message,'err'); }
   };
 }
-function openModal(html){$('modalBox').innerHTML=html;$('mask').classList.add('open');}
-function closeModal(){$('mask').classList.remove('open');}
+let MODAL_LOCKED=false;
+function openModal(html, locked=false){MODAL_LOCKED=locked;$('modalBox').innerHTML=html;$('mask').classList.add('open');}
+function closeModal(force=false){if(MODAL_LOCKED&&!force)return;MODAL_LOCKED=false;$('mask').classList.remove('open');}
 $('mask').addEventListener('click',e=>{if(e.target===$('mask'))closeModal();});
 
 // ---------- tabs ----------
@@ -363,7 +367,14 @@ document.querySelectorAll('nav.tabs button').forEach(b=>{
   };
 });
 
-async function refreshAll(){ loadInfo(); loadSports(); loadGroups(); }
+async function refreshAll(){
+  META=null; ATTR_META=null; CHECK=null;
+  await Promise.all([loadInfo(), loadSports(), loadGroups()]);
+  const active=document.querySelector('nav.tabs button.active').dataset.tab;
+  if(active==='attrs') await loadAttrs();
+  if(active==='products') await loadProducts();
+  if(active==='check') await loadCheck();
+}
 
 async function loadInfo(){
   const d=await api('/api/info');   // NEED_FILE 时抛 e.code='NEED_FILE'
@@ -404,7 +415,7 @@ async function loadSports(){
         <td>
           <button class="btn ghost sm" onclick="openSportModal(${s.fw_id})">编辑</button>
           <button class="btn ghost sm" onclick="sportProductQuick(${s.fw_id})">产品</button>
-          <button class="btn danger sm" onclick="delSport(${s.fw_id},'${esc(s.cn||'')}')">删除</button>
+          <button class="btn danger sm" onclick="delSport(${s.fw_id},${jsArg(s.cn||'')})">删除</button>
         </td>
       </tr>`;
     }).join('')||'<tr><td colspan=9 class="hint">无匹配运动</td></tr>';
@@ -452,7 +463,8 @@ async function saveSportProduct(fwId){
   $('doSp').onclick=async()=>{
     try{
       for(const o of ops){ await api('/api/apply',o); }
-      toast('矩阵已更新'); closeModal(); loadSports(); loadMatrix&&loadMatrix();
+      closeModal(); await refreshAll();
+      toast('矩阵已更新');
     }catch(e){toast(e.message,'err');}
   };
 }
@@ -485,7 +497,7 @@ async function openSportModal(fwId){
         <input id="fId" placeholder="留空自动分配(当前最大+1)" value="${s? s.fw_id:''}"></div>
       <div class="field"><label>分组 en name of group</label>
         <select id="fGroup"><option value="">请选择分组</option>
-        ${meta.groups.map(g=>`<option value="${esc(g.en)}" ${s&&s.group_en===g.en?'selected':''}>${esc(g.en)} (${esc(g.cn)})</option>`).join('')}
+        ${meta.groups.map(g=>`<option value="${esc(g.en)}" ${s&&groupKey(s.group_en)===groupKey(g.en)?'selected':''}>${esc(g.en)} (${esc(g.cn)})</option>`).join('')}
         </select></div>
       <div class="field"><label>心率算法类型</label>
         <input id="fHr" placeholder="留空继承模板或待填" value="${esc(s? (s.hr_algo||''):'')}"></div>
@@ -519,9 +531,8 @@ async function submitSport(fwId){
   const cn=$('fCn').value.trim(), en=$('fEn').value.trim();
   if(!cn||!en){toast('cn/en 名必填');return;}
   const p={
-    fw_id: fwId? null: ($('fId')?($('fId').value.trim()?parseInt($('fId').value):null):null),
     cn, en,
-    group_en: $('fGroup')?$('fGroup').value:null,
+    group_en: $('fGroup')?$('fGroup').value||null:null,
     hr: $('fHr')?$('fHr').value.trim()||null:null,
     standup: $('fStandup')?$('fStandup').value.trim()||null:null,
   };
@@ -531,7 +542,8 @@ async function submitSport(fwId){
   }else{
     const tmpl=$('fTemplate').value?parseInt($('fTemplate').value):null;
     const prods=[...document.querySelectorAll('#prodCheck input:checked')].map(i=>i.dataset.p);
-    const op={action:'sport_add',p:{...p,template:tmpl,
+    const newFwId=$('fId').value.trim()?parseInt($('fId').value):null;
+    const op={action:'sport_add',p:{...p,fw_id:newFwId,template:tmpl,
       app: $('fApp').value.trim()||null, sync: $('fSync').value.trim()||null,
       products: prods.length? prods : null}};
     await confirmApply(op,'新增运动');
@@ -561,15 +573,15 @@ function pickFp(path){$('fpPath').value=path;}
 function renderFpList(d){
   const base=d.dir.replace(/\/+$/,'');
   let rows='<div class="fph">目录: '+esc(d.dir)+'</div>';
-  rows+='<div class="fp-item"><span class="sub">导航</span>'+
-    '<button class="btn ghost sm" onclick="fpGo(\''+esc(parentDir(d.dir))+'\')">上级目录</button></div>';
+  rows+=`<div class="fp-item"><span class="sub">导航</span>
+    <button class="btn ghost sm" onclick="fpGo(${jsArg(parentDir(d.dir))})">上级目录</button></div>`;
   if(d.files.length){
     rows+=d.files.map(f=>`<div class="fp-item"><span class="sub">文件</span><span class="nm">${esc(f)}</span>
-      <button class="btn sm" onclick="pickFp('${esc(f)}')">选用</button></div>`).join('');
+      <button class="btn sm" onclick="pickFp(${jsArg(f)})">选用</button></div>`).join('');
   }
   if(d.subdirs.length){
     rows+=d.subdirs.map(s=>`<div class="fp-item"><span class="sub">目录</span><span class="nm">${esc(s)}</span>
-      <button class="btn ghost sm" onclick="fpGo('${esc(base+"/"+s)}')">进入</button></div>`).join('');
+      <button class="btn ghost sm" onclick="fpGo(${jsArg(base+"/"+s)})">进入</button></div>`).join('');
   }
   if(!d.files.length&&!d.subdirs.length){
     rows+='<div class="fph">没有子目录与 sports.xlsx（可输入更深目录，或直接粘贴文件路径）</div>';
@@ -600,8 +612,8 @@ async function loadGroups(){
       <tr><td class="mono">${g.row}</td><td>${esc(g.en)}</td><td>${esc(g.cn)}</td>
       <td><span class="pill ${g.used?'ok':'info'}">${g.used}</span></td>
       <td>
-        <button class="btn ghost sm" onclick="openRenameModal('${esc(g.en)}','${esc(g.cn)}')">改名</button>
-        <button class="btn danger sm" onclick="delGroup('${esc(g.en)}','${esc(g.cn)}',${g.used})">删除</button>
+        <button class="btn ghost sm" onclick="openRenameModal(${jsArg(g.en)},${jsArg(g.cn)})">改名</button>
+        <button class="btn danger sm" onclick="delGroup(${jsArg(g.en)},${jsArg(g.cn)},${g.used})">删除</button>
       </td>
       </tr>`).join('')||'<tr><td colspan=5 class="hint">无分组</td></tr>';
     renderPager('groupPager',LISTS.groups.page,total,n=>goPage('groups',n));
@@ -610,13 +622,15 @@ async function loadGroups(){
 function delGroup(en,cn,used){
   const warn = used>0
     ? `<div class="pill warning">该分组仍被 ${used} 个运动引用，后端会拒绝删除；请先在运动编辑中把这些运动迁移到其它分组。</div>`
-    : `<p class="hint">将删除 sport_group 行，并同步删除 sport sensor / distance fusion / 全部 code_attr_* 中的对应列。</p>`;
+    : `<p class="hint">将删除 sport_group 行；矩阵表中有对应列则同步删除，已缺少该列的表会跳过。</p>`;
   openModal(`<h3>删除分组确认</h3>
     <p>删除分组 <b>${esc(en)}</b> / ${esc(cn)}？</p>${warn}
     <div class="actions">
       <button class="btn ghost" onclick="closeModal()">取消</button>
-      <button class="btn danger" onclick="closeModal();confirmApply({action:'group_delete',p:{en:'${esc(en)}'}},'删除分组 '+en)">确认删除</button>
+      <button class="btn danger" id="doGroupDel">确认删除</button>
     </div>`);
+  $('doGroupDel').onclick=()=>confirmApply(
+    {action:'group_delete',p:{en,cn}}, '删除分组 '+en);
 }
 function openGroupModal(){
   openModal(`<h3>新增分组</h3>
@@ -645,11 +659,13 @@ function openRenameModal(oldEn,oldCn){
     <p class="hint">联动：sport_group 行、Sports 中引用该分组的所有行、sensor/distance/code_attr 矩阵列名。</p>
     <div class="actions">
       <button class="btn ghost" onclick="closeModal()">取消</button>
-      <button class="btn" onclick="submitRename()">预览修改</button>
+      <button class="btn" id="doGroupRename">预览修改</button>
     </div>`);
+  $('doGroupRename').onclick=()=>submitRename(oldEn,oldCn);
 }
-function submitRename(){
-  confirmApply({action:'group_rename',p:{new_en: $('rEn').value.trim()||null, new_cn:$('rCn').value.trim()||null}},
+function submitRename(oldEn,oldCn){
+  confirmApply({action:'group_rename',p:{old_en:oldEn, old_cn:oldCn,
+    new_en: $('rEn').value.trim()||null, new_cn:$('rCn').value.trim()||null}},
     '重命名分组');
 }
 
@@ -674,8 +690,8 @@ async function loadAttrs(){
         <td>${pkeys.length?'<span class="pill ok">'+pkeys.length+'</span> '+esc(pkeys.join(', ').slice(0,60)):'<span class="hint">全产品不支持</span>'}</td>
         <td>${Object.keys(a.groups).length}</td>
         <td>
-          <button class="btn ghost sm" onclick="openAttrEdit('${esc(a.en)}')">编辑</button>
-          <button class="btn danger sm" onclick="delAttr('${esc(a.en)}')">删除</button>
+          <button class="btn ghost sm" onclick="openAttrEdit(${jsArg(a.en)})">编辑</button>
+          <button class="btn danger sm" onclick="delAttr(${jsArg(a.en)})">删除</button>
         </td></tr>`;
     }).join('')||'<tr><td colspan=7 class="hint">无匹配数据项</td></tr>';
     renderPager('attrPager',st.page,Math.max(1,Math.ceil(d.total/st.size)),n=>goPage('attrs',n));
@@ -722,7 +738,7 @@ async function openAttrEdit(en){
     </div>
     <div class="actions">
       <button class="btn ghost" onclick="closeModal()">取消</button>
-      <button class="btn" onclick="submitAttrEdit('${esc(en)}','${esc(table)}')">预览修改</button>
+      <button class="btn" onclick="submitAttrEdit(${jsArg(en)},${jsArg(table)})">预览修改</button>
     </div>`);
 }
 async function submitAttrEdit(en,table){
@@ -746,37 +762,62 @@ function delAttr(en){
 // ================= products =================
 async function loadProducts(){
   try{
-    const meta=await loadMeta();
-    const {part,total}=pageSlice('products',meta.products);
+    const products=await api('/api/products');
+    const {part,total}=pageSlice('products',products);
     $('productBody').innerHTML=part.map(p=>{
-      return `<tr><td>${esc(p)}</td><td>是</td><td>全部 code_attr 表</td>
-        <td><button class="btn danger sm" onclick="delProduct('${esc(p)}')">删除列</button></td></tr>`;
+      const tables=p.tables.length ? p.tables.map(t=>`<span class="pchip">${esc(t)}</span>`).join('')
+        :'<span class="hint">未关联 code_attr 表</span>';
+      return `<tr><td>${esc(p.name)}</td><td>是</td><td>${tables}</td>
+        <td><button class="btn danger sm" onclick="delProduct(${jsArg(p.name)},${jsArg(p.tables)})">删除列</button></td></tr>`;
     }).join('')||'<tr><td colspan=4 class="hint">无产品列</td></tr>';
     renderPager('productsPager',LISTS.products.page,total,n=>goPage('products',n));
   }catch(e){toast(e.message,'err');}
 }
-function openProductModal(){
+async function openProductModal(){
+  const tables=(await loadMeta()).codeattr_sheets;
   openModal(`<h3>新增产品列</h3>
     <div class="field"><label>产品名</label>
       <input id="pName" placeholder="字母开头，将生成 sport_type_in 文件名"></div>
-    <p class="hint">同步：Sports 产品列(row1 名+row2 计数) + 全部 code_attr 表 product_start/end 之间加列。</p>
+    <div class="field" style="margin-top:12px"><label>目标 code_attr 表</label>
+      <select id="pTable" onchange="toggleNewProductTable()">
+        <option value="">请选择既有表或新建表</option>
+        ${tables.map(t=>`<option value="${esc(t)}">${esc(t)}</option>`).join('')}
+        <option value="__new__">新建 code_attr_* 表（复制 code_attr_sport）</option>
+      </select></div>
+    <div class="field" id="newProductTableField" style="margin-top:12px;display:none"><label>新表名</label>
+      <input id="pNewTable" placeholder="如 code_attr_new_project"></div>
+    <p class="hint">新增只写入 Sports 与选中的一张 code_attr 表。新建表会复制 code_attr_sport 的结构、移除模板产品列、登记到 code_attr_product，再写入当前产品列。</p>
     <div class="actions">
       <button class="btn ghost" onclick="closeModal()">取消</button>
       <button class="btn" onclick="submitProductAdd()">生成变更预览</button>
     </div>`);
 }
+function toggleNewProductTable(){
+  $('newProductTableField').style.display=$('pTable').value==='__new__'?'':'none';
+}
 function submitProductAdd(){
   const name=$('pName').value.trim(); if(!name){toast('产品名必填');return;}
-  confirmApply({action:'product_add',p:{name}},'新增产品列 '+name);
+  const table=$('pTable').value;
+  if(!table){toast('请选择目标 code_attr 表');return;}
+  const p={name};
+  if(table==='__new__'){
+    const newTable=$('pNewTable').value.trim();
+    if(!newTable){toast('请填写新表名');return;}
+    p.new_table=newTable;
+  }else{
+    p.tables=[table];
+  }
+  confirmApply({action:'product_add',p},'新增产品列 '+name);
 }
-function delProduct(name){
+function delProduct(name,tables){
+  const tableText=tables.length?tables.join('、'):'无 code_attr 表';
   openModal(`<h3>删除产品列</h3>
-    <p>删除产品 ${esc(name)} 在 Sports 与所有 code_attr 表中的列（数据一并删除），不可逆。</p>
+    <p>删除产品 ${esc(name)} 在 Sports 与 ${esc(tableText)} 中的列（数据一并删除），不可逆。</p>
     <div class="actions">
       <button class="btn ghost" onclick="closeModal()">取消</button>
       <button class="btn danger" id="doDelProd">确认删除</button>
     </div>`);
-  $('doDelProd').onclick=()=>{closeModal();confirmApply({action:'product_delete',p:{name}},'删除产品列 '+name);};
+  $('doDelProd').onclick=()=>{closeModal();confirmApply({action:'product_delete',p:{name,tables}},'删除产品列 '+name);};
 }
 
 // ================= check =================
@@ -796,12 +837,41 @@ async function exportCheckReport(){
     window.location='/api/check/export.xml';
   }catch(e){toast(e.message,'err');}
 }
-async function runGenerate(){
-  if(!confirm('将对当前完整 sports.xlsx 执行 sport_gen.py 全量生成，是否继续？')) return;
+let GENERATING=false;
+function setGenerateButtonBusy(busy){
+  const button=$('generateButton'); button.disabled=busy;
+  button.textContent=busy?'生成中…':'生成';
+}
+async function cancelGenerate(){
+  const button=$('cancelGenerate'); if(button)button.disabled=true;
+  const state=$('generateState'); if(state)state.textContent='正在请求中断…';
   try{
-    const d=await api('/api/generate',{method:'POST'});
+    const result=await api('/api/generate/cancel',{});
+    if(state)state.textContent=result.message;
+  }catch(e){
+    if(state)state.textContent='中断失败：'+e.message;
+    if(button)button.disabled=false;
+  }
+}
+async function runGenerate(){
+  if(GENERATING)return;
+  if(!confirm('将对当前完整 sports.xlsx 执行 sport_gen.py 全量生成，是否继续？')) return;
+  GENERATING=true; setGenerateButtonBusy(true);
+  openModal(`<h3>正在生成</h3>
+    <p id="generateState">正在执行 sport_gen.py，请勿重复点击生成。</p>
+    <p class="hint">中断会终止当前生成进程；已生成的文件可能保留，请随后检查 Git diff。</p>
+    <div class="actions"><button class="btn danger" id="cancelGenerate">中断生成</button></div>`, true);
+  $('cancelGenerate').onclick=cancelGenerate;
+  try{
+    const d=await api('/api/generate',{});
+    closeModal(true);
     openModal(`<h3>生成完成</h3><pre class="diff">${esc(d.diff)}</pre><div class="actions"><button class="btn" onclick="closeModal()">关闭</button></div>`);
-  }catch(e){toast(e.message,'err');}
+  }catch(e){
+    closeModal(true);
+    toast(e.message,'err');
+  }finally{
+    GENERATING=false; setGenerateButtonBusy(false);
+  }
 }
 async function loadCheck(){
   if(CHECK===null){ try{CHECK=await api('/api/check');}catch(e){toast(e.message,'err');return;} }
