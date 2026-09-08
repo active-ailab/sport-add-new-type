@@ -5,7 +5,7 @@
 # This file is the source of truth for `sport-config check`.
 # The checker must not infer additional business rules in Python code.
 
-schema_version: 1
+schema_version: 2
 name: sports_xlsx_firmware_rules
 description: >-
   固件运动配置 sports.xlsx 的结构、字段、枚举和跨 Sheet 关联约束。
@@ -398,3 +398,34 @@ generator_contract:
   excluded_from_check:
     - sports.csv
     - sports_md
+
+# Web 原有的生成器契约检查也只在本文件登记。Python 只按 rule id
+# 执行通用/结构性检查，不再维护另一份等级配置。
+contract_rules:
+  SPT-001: {severity: error, impact: sport index}
+  SPT-002: {severity: error, impact: sport index}
+  SPT-003: {severity: error, impact: sport index}
+  SPT-004: {severity: error, impact: sport enum}
+  SPT-005: {severity: error, impact: sport enum}
+  SPT-006: {severity: warning, impact: sport display}
+  GRP-002: {severity: error, impact: sport group enum}
+  GRP-003: {severity: error, impact: sport group matrix}
+  GRP-004: {severity: error, impact: sport group reference}
+  GRP-005: {severity: warning, impact: sport group display}
+  PROD-001: {severity: warning, impact: product support}
+  PROD-002: {severity: warning, impact: product support}
+  PROD-003: {severity: error, impact: product header count}
+  # 行列数量不一致为 error；仅列名不一致为 info，由规则执行器保留实际等级。
+  ALN-001:
+    severity: inherit
+    impact: matrix alignment
+  CAT-001: {severity: error, impact: code attr catalog}
+  SEN-001: {severity: warning, impact: sport sensor}
+  DST-001: {severity: info, impact: distance algorithm}
+  ATTR-001: {severity: error, impact: code attr id}
+  ATTR-002: {severity: error, impact: code attr enum}
+  ATTR-003: {severity: warning, impact: code attr metadata}
+  ATTR-004: {severity: error, impact: code attr boundary}
+  MAT-001: {severity: warning, impact: code attr matrix}
+  STN-001: {severity: warning, impact: standup generation}
+  HR-001: {severity: info, impact: heart-rate generation}

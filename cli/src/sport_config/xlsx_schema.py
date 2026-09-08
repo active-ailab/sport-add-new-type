@@ -1,40 +1,17 @@
-"""Validate sports.xlsx and invoke the existing direct sport generator."""
-
-import argparse
+"""Generic executor for the declaration-only sports.xlsx schema rules."""
 from dataclasses import dataclass
-from enum import Enum
 from pathlib import Path
 import re
-import subprocess
-import sys
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 import yaml
 from openpyxl import load_workbook
 
-
-VERSION = "0.1.0"
-COMMON_RELATIVE = Path("framework/engine/sportEngine/common")
-XLSX_NAME = "sports.xlsx"
-GENERATOR_NAME = "sport_gen.py"
-RULES_PATH = Path(__file__).resolve().parents[2] / "rules" / "sports_xlsx_rules.yaml"
-ACTION_ALIASES = {
-    "-c": "check",
-    "-check": "check",
-    "check": "check",
-    "-g": "gen",
-    "-gen": "gen",
-    "gen": "gen",
-}
+RULES_PATH = Path(__file__).resolve().parent / "rules" / "sports_xlsx_rules.yaml"
 
 
-class SportConfigError(RuntimeError):
+class SchemaError(RuntimeError):
     pass
-
-
-class CheckResult(Enum):
-    SKIPPED = "skipped"
-    PASSED = "passed"
 
 
 @dataclass(frozen=True)
@@ -42,88 +19,6 @@ class Finding:
     severity: str
     rule_id: str
     message: str
-
-
-def normalize_short_options(argv: Sequence[str]) -> List[str]:
-    normalized = []
-    for argument in argv:
-        if len(argument) >= 2 and argument[0] == "-" and argument[1] != "-" and argument[1].isalpha():
-            normalized.append("-" + argument[1].lower() + argument[2:])
-        else:
-            normalized.append(argument)
-    return normalized
-
-
-def normalize_action_aliases(argv: Sequence[str]) -> List[str]:
-    normalized = []
-    for argument in normalize_short_options(argv):
-        normalized.append(ACTION_ALIASES.get(argument.lower(), argument))
-    return normalized
-
-
-def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
-        description="Check sports.xlsx and run its existing direct generator.",
-        usage="sport-config [-h] [-v] ACTION [-r PATH]",
-        epilog="ACTION: -c/-C/-check/check for validation; -g/-G/-gen/gen for direct generation.",
-    )
-    parser.add_argument("-v", "--version", action="version", version="sport-config " + VERSION)
-    parser.add_argument("command", choices=("check", "gen"), metavar="ACTION", help="-c/-C/-check/check or -g/-G/-gen/gen")
-    parser.add_argument("-r", "--repo", metavar="PATH", help="repo root or a directory inside it")
-    return parser
-
-
-def find_repo(start: Path) -> Path:
-    current = start.resolve()
-    if current.is_file():
-        current = current.parent
-    for candidate in (current, *current.parents):
-        if (candidate / ".repo").is_dir():
-            return candidate
-    raise SportConfigError("cannot find a repo root containing .repo from: {}".format(start))
-
-
-def require_layout(repo: Path) -> Tuple[Path, Path]:
-    common_dir = repo / COMMON_RELATIVE
-    xlsx = common_dir / XLSX_NAME
-    generator = common_dir / GENERATOR_NAME
-    if not xlsx.is_file():
-        raise SportConfigError("missing sports.xlsx: {}".format(xlsx))
-    if not generator.is_file():
-        raise SportConfigError("missing sport generator: {}".format(generator))
-    if not RULES_PATH.is_file():
-        raise SportConfigError("missing rule configuration: {}".format(RULES_PATH))
-    return xlsx, generator
-
-
-def xlsx_has_changes(repo: Path, xlsx: Path) -> bool:
-    git_root = git_root_for_path(xlsx.parent)
-    relative = xlsx.relative_to(git_root)
-    result = git_command(git_root, ["status", "--porcelain=v1", "--untracked-files=all", "--", str(relative)])
-    return bool(result.stdout.strip())
-
-
-def git_root_for_path(start: Path) -> Path:
-    result = git_command(start, ["rev-parse", "--show-toplevel"])
-    return Path(result.stdout.strip()).resolve()
-
-
-def git_command(directory: Path, arguments: Sequence[str]) -> subprocess.CompletedProcess:
-    try:
-        result = subprocess.run(
-            ["git", "-C", str(directory), *arguments],
-            check=False,
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-        )
-    except OSError as exc:
-        raise SportConfigError("cannot run git: {}".format(exc))
-    if result.returncode:
-        raise SportConfigError("git {} failed: {}".format(arguments[0], result.stderr.strip() or result.stdout.strip()))
-    return result
-
-
 def value(value: Any) -> str:
     return str(value).strip() if value is not None else ""
 
@@ -133,9 +28,9 @@ def load_rules() -> Dict[str, Any]:
         with RULES_PATH.open(encoding="utf-8") as stream:
             rules = yaml.safe_load(stream)
     except (OSError, yaml.YAMLError) as exc:
-        raise SportConfigError("cannot read rule configuration: {}".format(exc))
-    if not isinstance(rules, dict) or rules.get("schema_version") != 1:
-        raise SportConfigError("unsupported rule configuration: {}".format(RULES_PATH))
+        raise SchemaError("cannot read rule configuration: {}".format(exc))
+    if not isinstance(rules, dict) or rules.get("schema_version") != 2:
+        raise SchemaError("unsupported rule configuration: {}".format(RULES_PATH))
     return rules
 
 
@@ -353,63 +248,10 @@ def check_xlsx(xlsx: Path) -> List[Finding]:
         # Normal mode reads the actual cells instead of trusting that dimension.
         workbook = load_workbook(xlsx, read_only=False, data_only=True)
     except Exception as exc:
-        raise SportConfigError("cannot read sports.xlsx: {}".format(exc))
+        raise SchemaError("cannot read sports.xlsx: {}".format(exc))
     try:
         return WorkbookChecker(workbook, load_rules()).run()
     finally:
         workbook.close()
 
 
-def print_findings(findings: Sequence[Finding]) -> None:
-    for finding in findings:
-        print("{} [{}] {}".format(finding.severity, finding.rule_id, finding.message))
-
-
-def run_check(repo: Path, xlsx: Path) -> CheckResult:
-    if not xlsx_has_changes(repo, xlsx):
-        print("SKIP: sports.xlsx unchanged")
-        return CheckResult.SKIPPED
-    findings = check_xlsx(xlsx)
-    print_findings(findings)
-    errors = [finding for finding in findings if finding.severity == "ERROR"]
-    if errors:
-        raise SportConfigError("sports.xlsx check failed: {} error(s)".format(len(errors)))
-    print("PASS: sports.xlsx check passed")
-    return CheckResult.PASSED
-
-
-def run_generator(repo: Path, generator: Path) -> None:
-    common_dir = generator.parent
-    result = subprocess.run([sys.executable, generator.name], cwd=str(common_dir), check=False)
-    if result.returncode:
-        raise SportConfigError("sport_gen.py failed with exit {}".format(result.returncode))
-    diff = git_command(git_root_for_path(common_dir), ["diff", "--stat"])
-    print("PASS: sport_gen.py completed")
-    print(diff.stdout.rstrip() or "git diff --stat: no unstaged diff")
-
-
-def run(arguments: Sequence[str], cwd: Optional[Path] = None) -> int:
-    parser = build_parser()
-    args = parser.parse_args(normalize_action_aliases(arguments))
-    start = Path(args.repo) if args.repo else (cwd or Path.cwd())
-    try:
-        repo = find_repo(start)
-        xlsx, generator = require_layout(repo)
-        result = run_check(repo, xlsx)
-        if args.command == "gen":
-            if result is CheckResult.SKIPPED:
-                print("SKIP: generation not run because sports.xlsx is unchanged")
-            else:
-                run_generator(repo, generator)
-        return 0
-    except SportConfigError as exc:
-        parser.error(str(exc))
-    return 2
-
-
-def main() -> int:
-    return run(sys.argv[1:])
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())
