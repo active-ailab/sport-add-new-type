@@ -14,16 +14,19 @@ Organization: Active.Bu
 
 ### 安装
 
-推荐在本仓库创建隔离环境并安装 CLI，安装过程会同时安装 Web 所需的 Flask、规则解析和 XLSX 依赖。
+在 Ubuntu / Debian 系统中先安装以下三项系统级依赖：
+
+```bash
+sudo apt-get update
+sudo apt-get install -y python3-openpyxl python3-yaml python3-flask
+```
+
+安装依赖后，可使用仓库中的 `install.sh` 创建 `sport-config` 与 `sport-proto` 命令链接：
 
 ```bash
 cd /home/zepp/workspace/active-lab/sport-add-new-type
-python3 -m venv .venv
-.venv/bin/python -m pip install --upgrade pip
-.venv/bin/python -m pip install ./cli
+./install.sh
 ```
-
-也可使用仓库中的 `install.sh` 创建命令链接；此方式使用系统 `python3`，须预先安装 `cli/pyproject.toml` 声明的依赖。
 
 ### 目标 XLSX 的定位
 
