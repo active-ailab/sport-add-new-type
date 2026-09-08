@@ -114,13 +114,41 @@ sport-proto -p PHN -p phn_plan
 ```text
 sport-add-new-type/
 ├── cli/
-│   ├── bin/                # sport-config、sport-proto 命令入口
+│   ├── bin/
+│   │   ├── sport-config                    # sport-config 命令包装入口
+│   │   └── sport-proto                     # sport-proto 命令包装入口
 │   ├── src/
-│   │   ├── sport_config/   # sport-config.py 主入口、Web、XLSX 与规则
-│   │   └── sport_proto/    # sport-proto.py 主入口
-│   ├── tests/              # CLI 单元测试
-│   └── pyproject.toml      # CLI 安装与依赖配置
-├── VERSION                 # 仓库版本
-├── install.sh              # 本地安装脚本
-└── .github/workflows/      # 飞书通知工作流
+│   │   ├── sport_config/                   # sports.xlsx 工具包
+│   │   │   ├── __init__.py
+│   │   │   ├── __main__.py                 # 支持 python -m sport_config
+│   │   │   ├── sport_config.py             # 主 CLI：-c、-g、-a/add
+│   │   │   ├── web_app.py                  # 本地 Web 路由与接口
+│   │   │   ├── xlsx_check.py               # 统一检查服务
+│   │   │   ├── xlsx_schema.py              # YAML schema 规则执行器
+│   │   │   ├── xlsx_contract.py            # Web 原有数据契约检查
+│   │   │   ├── xlsx_generate.py            # 既有 sport_gen.py 调用封装
+│   │   │   ├── xlsx_target.py              # -r 与 XLSX/仓库目标解析
+│   │   │   ├── xlsx_editor.py              # Web 内部编辑能力
+│   │   │   ├── xlsx_model.py               # XLSX 数据模型
+│   │   │   ├── xlsx_plan.py                # 编辑变更计划
+│   │   │   ├── xlsx_repository.py          # XLSX 读写仓储层
+│   │   │   ├── xml_report.py               # 统一 XML 报告输出
+│   │   │   ├── rules/
+│   │   │   │   └── sports_xlsx_rules.yaml  # 唯一规则文件
+│   │   │   └── templates/
+│   │   │       └── index.html              # Web 页面
+│   │   └── sport_proto/                    # nanopb schema 生成工具包
+│   │       ├── __init__.py
+│   │       ├── __main__.py                 # 支持 python -m sport_proto
+│   │       └── sport_proto.py              # sport-proto 主入口
+│   ├── tests/
+│   │   ├── test_sport_config.py            # sport-config 单元测试
+│   │   └── test_sport_proto.py             # sport-proto 单元测试
+│   └── pyproject.toml                      # CLI 安装、入口和依赖配置
+├── .github/workflows/
+│   └── feishu-notify.yml                   # 飞书通知工作流
+├── .gitignore                              # 忽略 Python 缓存等生成物
+├── VERSION                                 # 仓库版本
+├── install.sh                              # 本地命令安装脚本
+└── README.md
 ```
