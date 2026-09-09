@@ -58,6 +58,18 @@ sport-config -a
 sport-config add -r /path/to/firmware-repo
 ```
 
+`sport-config -a` 启动后会在服务就绪时尝试打开本地浏览器。WSL2 环境优先使用 `wslview`；SSH 或无桌面环境无法自动打开时，会保留服务运行并打印访问地址。远程 SSH 使用端口转发：
+
+```bash
+# 在本机执行
+ssh -L 8500:127.0.0.1:8500 user@remote-host
+
+# 登录远程主机后执行
+sport-config -a
+```
+
+随后在本机访问 `http://127.0.0.1:8500`。
+
 支持的动作及别名如下：
 
 | 功能 | 写法 | 结果 |

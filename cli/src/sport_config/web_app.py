@@ -13,8 +13,13 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
+import socket
+import subprocess
 import sys
 import threading
+import time
+import webbrowser
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -438,11 +443,64 @@ def api_apply():
         return jsonify({"ok": False, "error": f"{type(e).__name__}: {e}"})
 
 
+def _ssh_session():
+    return any(os.environ.get(name) for name in ("SSH_CONNECTION", "SSH_CLIENT", "SSH_TTY"))
+
+
+def _open_browser(url):
+    """Open a local browser when a graphical opener is available."""
+    try:
+        if shutil.which("wslview"):
+            subprocess.Popen(["wslview", url])
+            return True
+        if os.name == "nt":
+            os.startfile(url)
+            return True
+        if sys.platform == "darwin" and shutil.which("open"):
+            subprocess.Popen(["open", url])
+            return True
+        if shutil.which("xdg-open") and (
+                not _ssh_session() or os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")):
+            subprocess.Popen(["xdg-open", url])
+            return True
+        if not _ssh_session() and (os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")):
+            return bool(webbrowser.open_new(url))
+    except (OSError, webbrowser.Error):
+        pass
+    return False
+
+
+def _print_browser_fallback(url, port):
+    print("浏览器未能自动打开，请手动访问：{}".format(url))
+    if _ssh_session():
+        print("SSH 场景请在本机建立端口转发：ssh -L {0}:127.0.0.1:{0} user@remote-host".format(port))
+        print("端口转发后访问：{}".format(url))
+
+
+def _open_browser_when_ready(url, host, port):
+    probe_host = "127.0.0.1" if host in ("0.0.0.0", "::") else host
+    for _ in range(50):
+        try:
+            with socket.create_connection((probe_host, port), timeout=0.2):
+                if not _open_browser(url):
+                    _print_browser_fallback(url, port)
+                return
+        except OSError:
+            time.sleep(0.1)
+    _print_browser_fallback(url, port)
+
+
 def run(target=None, host="127.0.0.1", port=8500):
     global XLSX_PATH, TARGET
     TARGET = target
     XLSX_PATH = str(target.xlsx) if target else None
-    print(f"访问: http://{host}:{port}")
+    url = "http://{}:{}".format(host, port)
+    print("访问: {}".format(url))
+    threading.Thread(
+        target=_open_browser_when_ready,
+        args=(url, host, port),
+        daemon=True,
+    ).start()
     app.run(host=host, port=port, debug=False, threaded=True)
 
 
