@@ -14,17 +14,16 @@ Organization: Active.Bu
 
 ### 安装
 
-在 Ubuntu / Debian 系统中先安装 Python 依赖：
+在 Ubuntu / Debian 系统中先安装 pip：
 
 ```bash
 sudo apt-get update
-sudo apt-get install -y python3-openpyxl python3-yaml python3-pip
-python3 -m pip install --user 'Flask>=3.0,<3.1'
+sudo apt-get install -y python3-pip
 ```
 
-`sport-config` 要求 Flask 版本为 `>=3.0,<3.1`。不要直接使用发行版自带的旧版 `python3-flask`，否则 `sport-config -a` 可能因缺少 Flask 路由快捷 API 而启动失败。
+运行 `install.sh` 时，脚本会根据 `cli/pyproject.toml` 自动安装 `openpyxl`、`PyYAML` 和 Flask 等 Python 依赖，其中 Flask 版本要求为 `>=3.0,<3.1`。不要直接使用发行版自带的旧版 `python3-flask`，否则 `sport-config -a` 可能因缺少 Flask 路由快捷 API 而启动失败。
 
-安装依赖后，可使用仓库中的 `install.sh` 创建 `sport-config` 与 `sport-proto` 命令链接：
+运行仓库中的 `install.sh` 会自动安装依赖，并创建 `sport-config` 与 `sport-proto` 命令链接：
 
 ```bash
 cd /home/zepp/workspace/active-lab/sport-add-new-type
